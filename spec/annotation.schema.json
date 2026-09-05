@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sirochek.local/api/v1/schema/annotation.json",
+  "title": "Разметка действий на видео",
+  "description": "Формат экспорта. Совпадает поле в поле с hyp0/schema.py (Annotation / Segment), поэтому выгрузку из приложения можно скормить hyp0/metrics.py без конвертера. Производные поля API (annotation_id, version, index, needs_review) в экспорт не попадают.",
+  "type": "object",
+  "required": ["video_id", "duration_s", "segments"],
+  "additionalProperties": false,
+  "properties": {
+    "video_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Идентификатор ролика. В экспорте — имя загруженного файла без расширения, как в hyp0."
+    },
+    "duration_s": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Длительность ролика в секундах, по данным ffprobe."
+    },
+    "fps": {
+      "type": ["number", "null"],
+      "exclusiveMinimum": 0,
+      "description": "Частота, на которой модель смотрела ролик (для Marlin — 2.0). null, если разметка сделана человеком."
+    },
+    "model": {
+      "type": "string",
+      "description": "Чем получена разметка: 'marlin-2b', 'marlin-2b+anthropic/claude-haiku-4.5', 'human', 'equal_split_k6'."
+    },
+    "meta": {
+      "type": "object",
+      "description": "Служебные данные прогона: job_id, версия промпта, тайминги, стоимость. Схемой не ограничены."
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Шаги по возрастанию start_s, без перекрытий. Порядок в массиве и есть индекс шага — отдельного поля index здесь нет.",
+      "items": { "$ref": "#/$defs/segment" }
+    }
+  },
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "title": "Шаг разметки",
+      "description": "Один шаг = одна контактная фаза. Инвариант end_s > start_s и отсутствие перекрытий JSON Schema выразить не может — их проверяет сервис перед записью и перед выгрузкой.",
+      "required": ["start_s", "end_s"],
+      "additionalProperties": false,
+      "properties": {
+        "start_s": { "type": "number", "minimum": 0 },
+        "end_s": { "type": "number", "minimum": 0 },
+        "action": {
+          "type": "string",
+          "description": "Глагол в настоящем времени: «берёт». Пустая строка — модель не разобрала, шаг ждёт разметчика."
+        },
+        "object": {
+          "type": "string",
+          "description": "Существительное: «кружку». Пустая строка допустима по той же причине."
+        },
+        "tool": {
+          "type": "string",
+          "description": "Инструмент, если он есть в кадре. Обычно пустая строка."
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Уверенность прохода structure. null у ручной разметки и у шагов, добавленных пользователем."
+        },
+        "keyframe_ts": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Таймкод ключевого кадра, внутри [start_s, end_s]."
+        },
+        "edited_by_human": {
+          "type": "boolean",
+          "description": "Правил ли шаг пользователь. Даёт замер, какая доля автоматической разметки уходит без правок."
+        }
+      }
+    }
+  }
+}

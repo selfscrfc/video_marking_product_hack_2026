@@ -1,0 +1,1271 @@
+openapi: 3.1.0
+
+info:
+  title: Sirochek — автоматическая разметка действий по видео
+  version: 1.0.0
+  summary: Загрузка ролика, автоматическая разметка, редактирование и экспорт в JSON/CSV.
+  description: |
+    Бэкенд веб-приложения из кейса «Автоматическая разметка действий по видео».
+
+    Сценарий: пользователь загружает ролик 5–30 с (`POST /videos`), запускает обработку
+    (`POST /videos/{video_id}/jobs`), следит за прогрессом (`GET /jobs/{job_id}` или SSE),
+    получает готовую разметку (`GET /annotations/{annotation_id}`), правит её
+    (`PATCH`/`POST`/`DELETE` по сегментам) и выгружает (`GET /annotations/{id}/export`).
+
+    **Разметку считает Marlin-2B на Modal одним проходом** — он возвращает перечисление
+    событий с таймкодами. Отдельного этапа поиска границ нет. Marlin не разделяет глагол и
+    объект, поэтому после него идёт короткий текстовый проход через LLM (OpenRouter), который делит
+    описание на `action` / `object` / `tool` и проставляет `confidence`.
+
+    **Экспорт и ответы API — не одно и то же.** Экспорт отдаёт канонический формат
+    (`spec/annotation.schema.json`, он же `hyp0/schema.py`): без `index`, без
+    `needs_review`, без идентификаторов. Ответы API оборачивают его и добавляют
+    производные поля. Это сделано ради того, чтобы выгрузку можно было напрямую скормить
+    `hyp0/metrics.py`.
+
+    **Аутентификации нет.** Роли пользователей и биллинг кейс выносит из скоупа — это
+    зафиксированное решение, а не недоделка. Сервис рассчитан на запуск в доверенной сети.
+
+security: []  # Аутентификации нет: роли пользователей и биллинг кейс выносит из
+              # скоупа. Пустой массив — это заявление, а не пропуск.
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Локальный запуск через docker compose
+
+tags:
+  - name: service
+    description: Здоровье сервиса и лимиты для клиента
+  - name: videos
+    description: Загрузка ролика, метаданные, кадры
+  - name: jobs
+    description: Задачи автоматической разметки
+  - name: annotations
+    description: Чтение и правка разметки
+  - name: export
+    description: Выгрузка и схема
+
+paths:
+  /health:
+    get:
+      tags: [service]
+      summary: Состояние сервиса
+      description: |
+        Живость зависимостей. `ready: false` означает, что принимать задачи нельзя —
+        например, воркер не отвечает или Modal-функция не задеплоена.
+      operationId: getHealth
+      responses:
+        '200':
+          description: Состояние собрано
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Сервис не готов принимать задачи
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /config:
+    get:
+      tags: [service]
+      summary: Лимиты и опции для клиента
+      description: |
+        Фронт читает лимиты отсюда и не хардкодит их. Иначе текст в дропзоне
+        («до 30 секунд, от 720p») разъедется с тем, что реально проверяет сервер.
+      operationId: getConfig
+      responses:
+        '200':
+          description: Конфигурация клиента
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientConfig' }
+
+  /videos:
+    get:
+      tags: [videos]
+      summary: Список загруженных роликов
+      operationId: listVideos
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Ролики, новые первыми
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Video' }
+                  total: { type: integer, minimum: 0 }
+    post:
+      tags: [videos]
+      summary: Загрузить ролик
+      description: |
+        Файл проверяется синхронно через `ffprobe`: контейнер MP4/MOV, длительность в
+        диапазоне из `/config`, высота не ниже `min_height`. Ролик хранится по sha256,
+        поэтому повторная загрузка того же файла возвращает `200` и уже существующую
+        запись вместо дубликата.
+      operationId: uploadVideo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: MP4 или MOV
+      responses:
+        '201':
+          description: Ролик принят
+          headers:
+            Location:
+              description: Адрес созданного ролика
+              schema: { type: string, format: uri-reference }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Video' }
+        '200':
+          description: Такой файл уже загружен — вернули существующий (дедупликация по sha256)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Video' }
+        '413':
+          $ref: '#/components/responses/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /videos/{video_id}:
+    parameters:
+      - $ref: '#/components/parameters/VideoId'
+    get:
+      tags: [videos]
+      summary: Метаданные ролика
+      operationId: getVideo
+      responses:
+        '200':
+          description: Метаданные
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Video' }
+        '404':
+          $ref: '#/components/responses/Problem'
+    delete:
+      tags: [videos]
+      summary: Удалить ролик
+      description: Каскадом удаляет задачи, разметки, кэш кадров и сам файл.
+      operationId: deleteVideo
+      responses:
+        '204':
+          description: Удалён
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /videos/{video_id}/content:
+    parameters:
+      - $ref: '#/components/parameters/VideoId'
+    get:
+      tags: [videos]
+      summary: Файл ролика
+      description: |
+        Отдаётся с поддержкой `Range`, чтобы `<video>` мог перематывать без докачивания
+        целиком. Это же URL используется таймлайном редактора.
+      operationId: getVideoContent
+      parameters:
+        - name: Range
+          in: header
+          required: false
+          schema: { type: string }
+          example: bytes=0-1048575
+      responses:
+        '200':
+          description: Файл целиком
+          content:
+            video/mp4: { schema: { type: string, format: binary } }
+            video/quicktime: { schema: { type: string, format: binary } }
+        '206':
+          description: Запрошенный диапазон
+          headers:
+            Content-Range:
+              schema: { type: string }
+          content:
+            video/mp4: { schema: { type: string, format: binary } }
+            video/quicktime: { schema: { type: string, format: binary } }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '416':
+          $ref: '#/components/responses/Problem'
+
+  /videos/{video_id}/frame:
+    parameters:
+      - $ref: '#/components/parameters/VideoId'
+    get:
+      tags: [videos]
+      summary: Кадр по таймкоду
+      description: |
+        JPEG одного кадра. Нужен полосе кадров под таймлайном и предпросмотру при замене
+        ключевого кадра. Кадры кэшируются на диске, поэтому повторный запрос того же
+        `ts` не декодирует ролик заново.
+      operationId: getVideoFrame
+      parameters:
+        - name: ts
+          in: query
+          required: true
+          description: Таймкод в секундах от начала ролика
+          schema: { type: number, minimum: 0 }
+        - name: w
+          in: query
+          required: false
+          description: Ширина в пикселях; высота считается по пропорции
+          schema: { type: integer, minimum: 16, maximum: 1920, default: 320 }
+      responses:
+        '200':
+          description: Кадр
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /videos/{video_id}/jobs:
+    parameters:
+      - $ref: '#/components/parameters/VideoId'
+    post:
+      tags: [jobs]
+      summary: Запустить автоматическую разметку
+      description: |
+        Ставит задачу в очередь и сразу возвращает `202`. Задача идемпотентна по паре
+        (ролик, хэш параметров): повторный запрос с теми же параметрами вернёт ту же
+        задачу, а не запустит вторую. Чтобы перезапустить намеренно — `force: true`.
+      operationId: createJob
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JobCreate' }
+      responses:
+        '202':
+          description: Задача принята
+          headers:
+            Location:
+              description: Адрес задачи для опроса
+              schema: { type: string, format: uri-reference }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '200':
+          description: Такая задача уже есть — вернули её (идемпотентность)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /videos/{video_id}/annotation:
+    parameters:
+      - $ref: '#/components/parameters/VideoId'
+    get:
+      tags: [annotations]
+      summary: Последняя разметка ролика
+      description: |
+        Удобный вход в редактор по ссылке на ролик, когда `annotation_id` на руках нет.
+        Отдаёт самую свежую разметку — ту, что правил пользователь, если он правил.
+      operationId: getVideoAnnotation
+      responses:
+        '200':
+          description: Разметка
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /jobs:
+    get:
+      tags: [jobs]
+      summary: Список задач
+      operationId: listJobs
+      parameters:
+        - name: video_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/JobStatus' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Задачи, новые первыми
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Job' }
+                  total: { type: integer, minimum: 0 }
+
+  /jobs/{job_id}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      summary: Состояние задачи
+      description: |
+        Основной способ следить за прогрессом. Опрашивать раз в 1–2 секунды.
+        Когда `status` станет `succeeded`, в `annotation_id` будет готовая разметка.
+      operationId: getJob
+      responses:
+        '200':
+          description: Состояние
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /jobs/{job_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      summary: Поток прогресса (SSE)
+      description: |
+        `text/event-stream`. Прогрессивное улучшение поверх опроса `GET /jobs/{job_id}` —
+        контракт полностью закрывается опросом, SSE только избавляет от лестницы.
+
+        События:
+
+        | `event` | `data` |
+        |---|---|
+        | `stage` | `{ "stage": "infer", "stage_index": 2, "progress": 0.28 }` |
+        | `progress` | `{ "progress": 0.62, "eta_s": 21 }` |
+        | `done` | `{ "annotation_id": "…" }` |
+        | `error` | объект Problem |
+
+        Поток закрывается сервером после `done` или `error`.
+      operationId: streamJobEvents
+      responses:
+        '200':
+          description: Поток событий
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /jobs/{job_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      tags: [jobs]
+      summary: Отменить задачу
+      description: |
+        Задача в очереди снимается сразу. Уже уехавшую на Modal отменить нельзя — вызов
+        досчитается, но результат будет отброшен, а задача перейдёт в `cancelled`.
+      operationId: cancelJob
+      responses:
+        '202':
+          description: Отмена принята
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /jobs/{job_id}/raw:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      summary: Сырой ответ модели
+      description: |
+        Текст, который вернул Marlin, без разбора. Сохраняется всегда, в том числе когда
+        разбор упал: тогда пользователю есть что посмотреть глазами вместо пустого экрана,
+        а нам — на чём чинить парсер.
+      operationId: getJobRawResponse
+      responses:
+        '200':
+          description: Сырой текст
+          content:
+            text/plain: { schema: { type: string } }
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+    get:
+      tags: [annotations]
+      summary: Прочитать разметку
+      operationId: getAnnotation
+      responses:
+        '200':
+          description: Разметка
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+    put:
+      tags: [annotations]
+      summary: Заменить разметку целиком
+      description: |
+        Автосейв редактора. Требует `If-Match` с версией из `ETag`; при расхождении —
+        `409`, и клиент обязан перечитать разметку, а не затирать чужие правки.
+
+        Сервер сам сортирует сегменты по `start_s`, переиндексирует их и проставляет
+        `edited_by_human` тем, что изменились. Присланные `index` и `needs_review`
+        игнорируются — они производные.
+      operationId: replaceAnnotation
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnnotationUpdate' }
+      responses:
+        '200':
+          description: Сохранено
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}/segments:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+    post:
+      tags: [annotations]
+      summary: Добавить шаг
+      description: |
+        Новый шаг вставляется по времени, а не в конец списка. Границы не должны
+        пересекать соседей — иначе `422` с кодом `segment_overlap`.
+      operationId: createSegment
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SegmentCreate' }
+      responses:
+        '201':
+          description: Добавлен; возвращается вся разметка с новой нумерацией
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}/segments/{index}:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+      - $ref: '#/components/parameters/SegmentIndex'
+    patch:
+      tags: [annotations]
+      summary: Изменить шаг
+      description: |
+        Основная операция редактора: перетащили границу, поправили текст, сменили
+        ключевой кадр. Сервер ставит `edited_by_human = true` автоматически — клиенту
+        этот флаг присылать не нужно и он игнорируется.
+
+        Ответ содержит **всю** разметку, потому что правка границы может изменить порядок
+        и нумерацию соседей.
+      operationId: patchSegment
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SegmentPatch' }
+      responses:
+        '200':
+          description: Сохранено
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+    delete:
+      tags: [annotations]
+      summary: Удалить шаг
+      description: |
+        Дыра во времени не заполняется автоматически: соседи остаются на своих границах.
+        Схлопнуть промежуток — отдельное действие пользователя (`merge` или правка границы).
+      operationId: deleteSegment
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Удалён; возвращается вся разметка с новой нумерацией
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}/segments/{index}/split:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+      - $ref: '#/components/parameters/SegmentIndex'
+    post:
+      tags: [annotations]
+      summary: Разрезать шаг надвое
+      description: |
+        Лечение недосегментации: модель склеила две контактные фазы в одну. Описание
+        копируется в обе половины и обе помечаются `edited_by_human`.
+      operationId: splitSegment
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [at_s]
+              properties:
+                at_s:
+                  type: number
+                  description: Точка разреза, строго внутри шага
+      responses:
+        '200':
+          description: Разрезан
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}/segments/{index}/merge:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+      - $ref: '#/components/parameters/SegmentIndex'
+    post:
+      tags: [annotations]
+      summary: Слить шаг с соседним
+      description: |
+        Лечение пересегментации — самой частой ошибки. Отдельной операцией, а не через
+        правку границ, потому что руками это два перетаскивания и удаление, а здесь один
+        жест. Описание берётся у того шага, к которому присоединяют.
+      operationId: mergeSegment
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [with]
+              properties:
+                with:
+                  type: string
+                  enum: [prev, next]
+      responses:
+        '200':
+          description: Слит
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}/segments/{index}/keyframe:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+      - $ref: '#/components/parameters/SegmentIndex'
+    get:
+      tags: [annotations]
+      summary: Ключевой кадр шага
+      description: |
+        JPEG кадра на `keyframe_ts`. Заменить кадр — `PATCH` сегмента с новым
+        `keyframe_ts`; отдельного метода записи здесь нет намеренно, чтобы у ключевого
+        кадра был один источник истины.
+      operationId: getSegmentKeyframe
+      parameters:
+        - name: w
+          in: query
+          schema: { type: integer, minimum: 16, maximum: 1920, default: 320 }
+      responses:
+        '200':
+          description: Кадр
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}/segments/{index}/suggestions:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+      - $ref: '#/components/parameters/SegmentIndex'
+    post:
+      tags: [annotations]
+      summary: Подсказки по описанию шага
+      description: |
+        **Этап 2, в первой версии не реализовано** — контракт зафиксирован заранее, потому
+        что от подсказок зависит обещанное трёхкратное сокращение времени: разметчик,
+        несогласный с моделью, должен получать список вариантов, а не пустое поле.
+
+        Реализация — повторный прогон текстового прохода по тому же сырому описанию при
+        другой температуре.
+      operationId: getSegmentSuggestions
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                n:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                  default: 3
+      responses:
+        '200':
+          description: Варианты, лучший первым
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Suggestion' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '501':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}/export:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+    get:
+      tags: [export]
+      summary: Выгрузить разметку
+      description: |
+        Отдаётся файлом (`Content-Disposition: attachment`).
+
+        Перед ответом результат валидируется по `annotation.schema.json`. Невалидный файл
+        не отдаётся вообще — так требование «100 % корректности формата» держится
+        конструкцией, а не аккуратностью. Пустая разметка отсекается раньше, кодом
+        `annotation_empty`, чтобы пользователь получил внятный `422`, а не отказ валидатора.
+
+        JSON — канонический формат из `spec/annotation.schema.json`. CSV — его плоская
+        проекция, строка на шаг, RFC 4180, UTF-8 без BOM, точка как десятичный
+        разделитель, три знака после запятой.
+      operationId: exportAnnotation
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [json, csv] }
+      responses:
+        '200':
+          description: Файл выгрузки
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              example: attachment; filename="clip00.json"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportedAnnotation' }
+            text/csv:
+              schema: { type: string }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '500':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/import:
+    post:
+      tags: [export]
+      summary: Загрузить разметку из файла
+      description: |
+        Обратная сторона экспорта. Существует, чтобы round-trip (выгрузили → загрузили →
+        сравнили) был штатным путём API, а не отдельным скриптом.
+
+        `video_id` из файла должен соответствовать уже загруженному ролику, иначе
+        разметку не к чему привязать.
+      operationId: importAnnotation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExportedAnnotation' }
+      responses:
+        '201':
+          description: Создана новая разметка
+          headers:
+            Location:
+              schema: { type: string, format: uri-reference }
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /schema/annotation.json:
+    get:
+      tags: [export]
+      summary: JSON Schema экспорта
+      description: |
+        Та же схема, по которой сервер валидирует выгрузку. Отдаётся, чтобы клиент и
+        внешние потребители проверяли файлы той же схемой, а не своей копией.
+      operationId: getAnnotationSchema
+      responses:
+        '200':
+          description: Схема
+          content:
+            application/schema+json:
+              schema: { type: object }
+
+components:
+
+  parameters:
+    VideoId:
+      name: video_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AnnotationId:
+      name: annotation_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SegmentIndex:
+      name: index
+      in: path
+      required: true
+      description: Порядковый номер шага, с нуля. Меняется при правках, меняющих порядок.
+      schema: { type: integer, minimum: 0 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Версия разметки из `ETag`. Защищает от затирания чужих правок.
+      schema: { type: string }
+      example: '"7"'
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  headers:
+    ETag:
+      description: Версия разметки. Передаётся обратно в `If-Match` при любой правке.
+      schema: { type: string }
+      example: '"7"'
+
+  responses:
+    Problem:
+      description: Ошибка в формате RFC 9457
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+
+    Problem:
+      type: object
+      description: RFC 9457. `code` — машиночитаемый повод, по нему клиент и ветвится.
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri, default: 'about:blank' }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string, description: 'Человекочитаемое пояснение, по-русски' }
+        instance: { type: string, format: uri-reference }
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        errors:
+          type: array
+          description: Пофайловые нарушения — для 422 и для отказа валидатора экспорта
+          items:
+            type: object
+            required: [pointer, message]
+            properties:
+              pointer:
+                type: string
+                description: JSON Pointer на проблемное поле
+                example: /segments/3/end_s
+              message: { type: string }
+      example:
+        type: 'about:blank'
+        title: Границы шагов пересекаются
+        status: 422
+        code: segment_overlap
+        detail: Шаг 3 (4.0–7.5 с) заходит на шаг 4 (6.0–9.0 с).
+        errors:
+          - pointer: /segments/3/end_s
+            message: Должно быть не больше 6.0
+
+    ErrorCode:
+      type: string
+      enum:
+        - video_format_unsupported
+        - video_duration_out_of_range
+        - video_resolution_too_low
+        - video_too_large
+        - video_unreadable
+        - video_not_found
+        - video_in_use
+        - job_not_found
+        - job_not_cancellable
+        - inference_failed
+        - inference_timeout
+        - model_parse_failed
+        - structure_failed
+        - annotation_not_found
+        - annotation_empty
+        - segment_not_found
+        - segment_overlap
+        - segment_inverted
+        - segment_out_of_bounds
+        - version_missing
+        - version_conflict
+        - export_schema_invalid
+        - not_implemented
+        - service_unavailable
+
+    Health:
+      type: object
+      required: [ready, version]
+      properties:
+        ready: { type: boolean, description: Можно ли принимать задачи }
+        version: { type: string, description: Версия сборки или коммит }
+        database: { type: boolean }
+        queue: { type: boolean }
+        worker_seen_s_ago:
+          type: [number, 'null']
+          description: Сколько секунд назад воркер отмечался живым
+        modal:
+          type: object
+          properties:
+            reachable: { type: boolean }
+            app: { type: string }
+            warm:
+              type: [boolean, 'null']
+              description: Прогрет ли контейнер. Холодный старт съедает часть бюджета в 2 минуты.
+
+    ClientConfig:
+      type: object
+      required: [min_duration_s, max_duration_s, min_height, accepted_mime, max_size_bytes]
+      properties:
+        min_duration_s: { type: number, example: 5 }
+        max_duration_s: { type: number, example: 30 }
+        min_height: { type: integer, example: 720 }
+        accepted_mime:
+          type: array
+          items: { type: string }
+          example: [video/mp4, video/quicktime]
+        max_size_bytes: { type: integer, example: 209715200 }
+        confidence_threshold:
+          type: number
+          description: Ниже этого значения шаг получает `needs_review`
+          example: 0.6
+        min_segment_s:
+          type: number
+          description: Шаг короче этого тоже помечается на проверку
+          example: 0.4
+        profiles:
+          type: array
+          items: { $ref: '#/components/schemas/GranularityProfile' }
+        structure_models:
+          type: array
+          description: Доступные модели текстового прохода; первая — по умолчанию
+          items: { type: string }
+          example: [anthropic/claude-haiku-4.5, anthropic/claude-sonnet-5, anthropic/claude-opus-5]
+
+    GranularityProfile:
+      type: object
+      required: [id, title]
+      properties:
+        id: { type: string, enum: [contact_phase, coarse] }
+        title: { type: string }
+        description:
+          type: string
+          example: 'Один шаг — одна контактная фаза: подвести руку, взять, переместить, поставить, отпустить.'
+
+    Video:
+      type: object
+      required: [video_id, filename, duration_s, width, height, created_at]
+      properties:
+        video_id: { type: string, format: uuid }
+        filename: { type: string }
+        mime: { type: string }
+        duration_s: { type: number }
+        fps: { type: number, description: 'Собственная частота ролика, не та, на которой смотрит модель' }
+        width: { type: integer }
+        height: { type: integer }
+        size_bytes: { type: integer }
+        sha256: { type: string }
+        created_at: { type: string, format: date-time }
+        latest_annotation_id: { type: [string, 'null'], format: uuid }
+        latest_job_id: { type: [string, 'null'], format: uuid }
+
+    JobCreate:
+      type: object
+      properties:
+        profile:
+          type: string
+          enum: [contact_phase, coarse]
+          default: contact_phase
+        structure_model:
+          type: string
+          default: anthropic/claude-haiku-4.5
+          description: Слаг модели OpenRouter для текстового прохода, который делит описание на действие и объект
+        params: { $ref: '#/components/schemas/JobParams' }
+        force:
+          type: boolean
+          default: false
+          description: Перезапустить, даже если такая задача уже считалась
+
+    JobParams:
+      type: object
+      description: |
+        Параметры прогона. Значения по умолчанию — те, на которых Marlin обучался
+        (2 fps) и на которых гонялась гипотеза 0.
+      properties:
+        fps:
+          type: number
+          default: 2.0
+          description: Частота, с которой модель смотрит ролик
+        max_new_tokens: { type: integer, default: 512 }
+        prompt_mode:
+          type: string
+          enum: [caption, json]
+          default: caption
+          description: |
+            `caption` — родной режим Marlin («Describe the video with a scene summary and
+            timestamped events»), разбор через `from_marlin`. `json` — наш промпт со
+            схемой, разбор через `from_json`; держится как запасной путь, потому что
+            приверженность структуре у модели с `custom_code` заранее не известна.
+        min_segment_s:
+          type: number
+          default: 0.4
+          description: Шаги короче схлопываются с соседом на постобработке
+        merge_threshold:
+          type: number
+          default: 0.9
+          description: Порог похожести описаний, при котором соседние шаги предлагаются к слиянию
+
+    JobStatus:
+      type: string
+      enum: [queued, running, succeeded, failed, cancelled]
+
+    JobStage:
+      type: string
+      description: |
+        Стадии по порядку. `submit` — отправка ролика на Modal; `infer` — сам Marlin;
+        `parse` — разбор ответа; `structure` — текстовый проход, дающий действие и объект;
+        `postprocess` — сортировка, клиппинг по длительности, слияние дублей;
+        `keyframes` — выбор ключевых кадров; `persist` — запись в базу.
+      enum: [submit, infer, parse, structure, postprocess, keyframes, persist]
+
+    Job:
+      type: object
+      required: [job_id, video_id, status, created_at]
+      properties:
+        job_id: { type: string, format: uuid }
+        video_id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        stage: { $ref: '#/components/schemas/JobStage' }
+        stage_index: { type: integer, minimum: 0 }
+        stages:
+          type: array
+          items: { $ref: '#/components/schemas/JobStage' }
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            Доля выполненного. Внутри `infer` значение **оценочное**: Modal возвращает
+            результат целиком, промежуточного прогресса у нас нет, и число считается по
+            медиане прошлых прогонов. Это не измерение, и в интерфейсе его не стоит
+            подавать как точное.
+        eta_s: { type: [number, 'null'] }
+        annotation_id: { type: [string, 'null'], format: uuid }
+        params: { $ref: '#/components/schemas/JobParams' }
+        model: { type: string, example: marlin-2b }
+        structure_model: { type: string, example: anthropic/claude-haiku-4.5 }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+        timings:
+          type: object
+          description: Секунды по стадиям. Прямой замер требования «не более 2 минут на ролик».
+          additionalProperties: { type: number }
+          example: { submit: 1.2, infer: 34.8, parse: 0.01, structure: 2.1, postprocess: 0.05, keyframes: 3.4, persist: 0.08 }
+        cost: { $ref: '#/components/schemas/JobCost' }
+        error: { $ref: '#/components/schemas/Problem' }
+        raw_response_url:
+          type: [string, 'null']
+          format: uri-reference
+          description: Сырой ответ модели. Есть и когда разбор упал.
+
+    JobCost:
+      type: object
+      description: |
+        Две графы — ровно те сервисы, которые кейс требует назвать вместе со стоимостью.
+        Заполняются по факту прогона, а не оценкой.
+      properties:
+        modal:
+          type: object
+          properties:
+            gpu: { type: string, example: A10G }
+            gpu_seconds: { type: number }
+            usd: { type: [number, 'null'] }
+        openrouter:
+          type: object
+          properties:
+            model: { type: string, example: anthropic/claude-haiku-4.5 }
+            generation_id: { type: [string, 'null'], description: Идентификатор генерации OpenRouter — по нему сверяется списанная стоимость }
+            input_tokens: { type: integer }
+            cache_read_input_tokens: { type: integer }
+            output_tokens: { type: integer }
+            usd: { type: number }
+        total_usd: { type: number }
+
+    Segment:
+      type: object
+      description: Шаг в ответе API — канонические поля плюс производные `index` и `needs_review`.
+      required: [index, start_s, end_s, action, object, tool, edited_by_human, needs_review]
+      properties:
+        index: { type: integer, minimum: 0, description: Производное поле; в экспорт не попадает }
+        start_s: { type: number, minimum: 0 }
+        end_s: { type: number, minimum: 0 }
+        action: { type: string }
+        object: { type: string }
+        tool: { type: string }
+        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        keyframe_ts: { type: [number, 'null'], minimum: 0 }
+        keyframe_url: { type: [string, 'null'], format: uri-reference }
+        edited_by_human: { type: boolean }
+        needs_review:
+          type: boolean
+          description: |
+            Производное поле: `confidence` ниже порога, либо пустой `action` или `object`,
+            либо шаг короче `min_segment_s`. Считается сервером, потому что палитра
+            интерфейса монохромная и кодировать уверенность цветом нельзя — клиенту нужен
+            готовый признак, а не порог, который каждый экран определит по-своему.
+
+    Annotation:
+      type: object
+      description: Разметка в ответе API. Экспортный формат плюс идентификаторы и производные поля.
+      required: [annotation_id, video_id, duration_s, version, segments, created_at, updated_at]
+      properties:
+        annotation_id: { type: string, format: uuid }
+        video_id: { type: string, format: uuid }
+        job_id: { type: [string, 'null'], format: uuid }
+        duration_s: { type: number }
+        fps: { type: [number, 'null'] }
+        model: { type: string, example: marlin-2b+anthropic/claude-haiku-4.5 }
+        version: { type: integer, minimum: 1, description: 'То же значение, что в `ETag`' }
+        segments:
+          type: array
+          items: { $ref: '#/components/schemas/Segment' }
+        meta: { type: object }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        stats: { $ref: '#/components/schemas/AnnotationStats' }
+
+    AnnotationStats:
+      type: object
+      description: Считается сервером для шапки редактора.
+      properties:
+        segment_count: { type: integer }
+        edited_count: { type: integer }
+        needs_review_count: { type: integer }
+        mean_segment_s: { type: number }
+
+    AnnotationUpdate:
+      type: object
+      description: |
+        Тело для полной замены. `index`, `needs_review` и `edited_by_human` присылать не
+        нужно: первые два производные, третий проставляет сервер.
+      required: [segments]
+      properties:
+        segments:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [start_s, end_s]
+            properties:
+              start_s: { type: number, minimum: 0 }
+              end_s: { type: number, minimum: 0 }
+              action: { type: string }
+              object: { type: string }
+              tool: { type: string }
+              confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+              keyframe_ts: { type: [number, 'null'], minimum: 0 }
+
+    SegmentCreate:
+      type: object
+      required: [start_s, end_s]
+      properties:
+        start_s: { type: number, minimum: 0 }
+        end_s: { type: number, minimum: 0 }
+        action: { type: string, default: '' }
+        object: { type: string, default: '' }
+        tool: { type: string, default: '' }
+        keyframe_ts: { type: [number, 'null'] }
+
+    SegmentPatch:
+      type: object
+      minProperties: 1
+      description: Присылаются только меняющиеся поля.
+      properties:
+        start_s: { type: number, minimum: 0 }
+        end_s: { type: number, minimum: 0 }
+        action: { type: string }
+        object: { type: string }
+        tool: { type: string }
+        keyframe_ts: { type: number, minimum: 0 }
+
+    Suggestion:
+      type: object
+      required: [action, object]
+      properties:
+        action: { type: string }
+        object: { type: string }
+        tool: { type: string }
+        confidence: { type: [number, 'null'] }
+        source:
+          type: string
+          enum: [resample, sibling]
+          description: |
+            `resample` — повторный текстовый проход при другой температуре;
+            `sibling` — формулировка, уже использованная в похожем шаге этого же ролика.
+
+    ExportedAnnotation:
+      type: object
+      description: |
+        Канонический формат выгрузки. Совпадает поле в поле с `spec/annotation.schema.json`
+        и с `hyp0/schema.py`, поэтому выгрузку можно скормить `hyp0/metrics.py` без
+        конвертера. Производных полей API здесь нет намеренно.
+      required: [video_id, duration_s, segments]
+      additionalProperties: false
+      properties:
+        video_id: { type: string, minLength: 1 }
+        duration_s: { type: number, exclusiveMinimum: 0 }
+        fps: { type: [number, 'null'], exclusiveMinimum: 0 }
+        model: { type: string }
+        meta: { type: object }
+        segments:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [start_s, end_s]
+            additionalProperties: false
+            properties:
+              start_s: { type: number, minimum: 0 }
+              end_s: { type: number, minimum: 0 }
+              action: { type: string }
+              object: { type: string }
+              tool: { type: string }
+              confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+              keyframe_ts: { type: [number, 'null'], minimum: 0 }
+              edited_by_human: { type: boolean }
+      example:
+        video_id: clip00
+        duration_s: 30.0
+        fps: 2.0
+        model: marlin-2b+anthropic/claude-haiku-4.5
+        meta:
+          job_id: 8f1e...
+          prompt_mode: caption
+        segments:
+          - start_s: 0.0
+            end_s: 3.5
+            action: берёт
+            object: кружку
+            tool: ''
+            confidence: 0.91
+            keyframe_ts: 1.8
+            edited_by_human: false

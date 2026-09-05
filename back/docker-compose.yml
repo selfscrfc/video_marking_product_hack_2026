@@ -1,0 +1,79 @@
+# Топология из ARCHITECTURE.md. Локально GPU не нужна нигде: инференс уехал на Modal,
+# поэтому воркер — обычный CPU-контейнер, а стек одинаково поднимается на маке и на сервере.
+#
+# Modal-приложение (modal/marlin_app.py) сюда не входит и деплоится своим циклом:
+#   modal deploy back/modal/marlin_app.py
+
+name: sirochek
+
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://sirochek:sirochek@postgres:5432/sirochek
+      REDIS_URL: redis://redis:6379/0
+      MEDIA_ROOT: /data
+    ports:
+      - "8000:8000"
+    volumes:
+      - media:/data
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m worker.main
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://sirochek:sirochek@postgres:5432/sirochek
+      REDIS_URL: redis://redis:6379/0
+      MEDIA_ROOT: /data
+    volumes:
+      # тот же том, что у api: воркер пишет кадры, api их раздаёт
+      - media:/data
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: sirochek
+      POSTGRES_PASSWORD: sirochek
+      POSTGRES_DB: sirochek
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # btree_gist нужен для EXCLUDE-ограничения на пересечение шагов (см. ARCHITECTURE.md)
+      - ./migrations/init/01-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sirochek -d sirochek"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Очередь задач и канал прогресса. Данные переживать рестарт не обязаны:
+    # состояние задач лежит в postgres, redis только доставляет.
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  media:
+  pgdata:
