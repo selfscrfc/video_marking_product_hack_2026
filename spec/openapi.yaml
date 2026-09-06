@@ -14,7 +14,7 @@ info:
 
     **Разметку считает Marlin-2B на Modal одним проходом** — он возвращает перечисление
     событий с таймкодами. Отдельного этапа поиска границ нет. Marlin не разделяет глагол и
-    объект, поэтому после него идёт короткий текстовый проход через LLM (OpenRouter), который делит
+    объект, поэтому после него идёт короткий текстовый проход через языковую модель, который делит
     описание на `action` / `object` / `tool` и проставляет `confidence`.
 
     **Экспорт и ответы API — не одно и то же.** Экспорт отдаёт канонический формат
@@ -171,6 +171,8 @@ paths:
         '404':
           $ref: '#/components/responses/Problem'
         '409':
+          $ref: '#/components/responses/Problem'
+        '428':
           $ref: '#/components/responses/Problem'
 
   /videos/{video_id}/content:
@@ -396,6 +398,8 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
 
   /jobs/{job_id}/raw:
     parameters:
@@ -463,7 +467,7 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
-        '412':
+        '428':
           $ref: '#/components/responses/Problem'
         '422':
           $ref: '#/components/responses/Problem'
@@ -496,6 +500,48 @@ paths:
         '404':
           $ref: '#/components/responses/Problem'
         '409':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+    patch:
+      tags: [annotations]
+      summary: Правка нескольких шагов одной транзакцией
+      description: |
+        Существует ради одного жеста редактора: протяжка границы двигает и сам шаг, и
+        поджатого соседа. Двумя запросами это две версии и два повода разойтись — если
+        второй не дойдёт, разметка останется с дырой или нахлёстом ровно там, где
+        пользователь только что провёл мышью.
+
+        `index` в правках — нумерация **до** применения: сервер находит все шаги
+        заранее и только потом меняет. Инварианты проверяются один раз, на итоговом
+        состоянии, поэтому промежуточное пересечение не возникает и **порядок правок
+        не важен**.
+
+        Дубль индекса — `422`, а не «последний выигрывает»: неоднозначность здесь
+        всегда ошибка клиента.
+      operationId: patchSegments
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SegmentsPatch' }
+      responses:
+        '200':
+          description: Применено; версия выросла на единицу, а не на число правок
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '428':
           $ref: '#/components/responses/Problem'
         '422':
           $ref: '#/components/responses/Problem'
@@ -534,6 +580,8 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
         '422':
           $ref: '#/components/responses/Problem'
     delete:
@@ -556,6 +604,8 @@ paths:
         '404':
           $ref: '#/components/responses/Problem'
         '409':
+          $ref: '#/components/responses/Problem'
+        '428':
           $ref: '#/components/responses/Problem'
         '422':
           $ref: '#/components/responses/Problem'
@@ -596,6 +646,8 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
         '422':
           $ref: '#/components/responses/Problem'
 
@@ -635,6 +687,8 @@ paths:
         '404':
           $ref: '#/components/responses/Problem'
         '409':
+          $ref: '#/components/responses/Problem'
+        '428':
           $ref: '#/components/responses/Problem'
         '422':
           $ref: '#/components/responses/Problem'
@@ -705,6 +759,63 @@ paths:
         '404':
           $ref: '#/components/responses/Problem'
         '501':
+          $ref: '#/components/responses/Problem'
+
+  /annotations/{annotation_id}/review:
+    parameters:
+      - $ref: '#/components/parameters/AnnotationId'
+    post:
+      tags: [annotations]
+      summary: Завершить разметку
+      description: |
+        Отмечает разметку проверенной человеком: ролик уходит из очереди «ожидает
+        проверки» в «успешная разметка».
+
+        Отдельное действие, а не вывод из данных. Соблазн считать разметку
+        проверенной, когда у всех шагов снят `needs_review`, велик, но неверен:
+        разметчик может согласиться с моделью, ничего не правя, — и это тоже
+        проверка. Признать её может только человек, нажав кнопку.
+
+        Идемпотентно: повторный вызов оставляет ту же отметку.
+      operationId: reviewAnnotation
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Отмечено проверенным
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+    delete:
+      tags: [annotations]
+      summary: Вернуть разметку в проверку
+      description: Снимает отметку и возвращает ролик в очередь на проверку.
+      operationId: unreviewAnnotation
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Отметка снята
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Annotation' }
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '428':
           $ref: '#/components/responses/Problem'
 
   /annotations/{annotation_id}/export:
@@ -892,12 +1003,11 @@ components:
         - video_too_large
         - video_unreadable
         - video_not_found
-        - video_in_use
         - job_not_found
         - job_not_cancellable
         - inference_failed
-        - inference_timeout
         - model_parse_failed
+        # Стадия не отработала, но задача успешна: код едет в degraded, не в error.
         - structure_failed
         - annotation_not_found
         - annotation_empty
@@ -909,6 +1019,8 @@ components:
         - version_conflict
         - export_schema_invalid
         - not_implemented
+        # Прилетает на любое нарушение схемы запроса, то есть чаще всех остальных.
+        - validation_failed
         - service_unavailable
 
     Health:
@@ -922,14 +1034,24 @@ components:
         worker_seen_s_ago:
           type: [number, 'null']
           description: Сколько секунд назад воркер отмечался живым
-        modal:
-          type: object
-          properties:
-            reachable: { type: boolean }
-            app: { type: string }
-            warm:
-              type: [boolean, 'null']
-              description: Прогрет ли контейнер. Холодный старт съедает часть бюджета в 2 минуты.
+        inference:
+          type: array
+          description: |
+            Провайдеры зрительной модели из настроенного списка, в порядке
+            предпочтения. Для `ready` достаточно одного готового: список затем и
+            заведён, чтобы отказ любого не останавливал обработку.
+          items:
+            type: object
+            required: [name, ready]
+            properties:
+              name: { type: string, example: local }
+              ready: { type: boolean }
+              detail:
+                type: string
+                description: Адрес сервиса или имя приложения — чтобы было видно, о ком речь.
+        uptime_s:
+          type: number
+          description: Сколько секунд назад поднялся процесс api.
 
     ClientConfig:
       type: object
@@ -958,7 +1080,7 @@ components:
           type: array
           description: Доступные модели текстового прохода; первая — по умолчанию
           items: { type: string }
-          example: [anthropic/claude-haiku-4.5, anthropic/claude-sonnet-5, anthropic/claude-opus-5]
+          example: [openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b]
 
     GranularityProfile:
       type: object
@@ -996,8 +1118,8 @@ components:
           default: contact_phase
         structure_model:
           type: string
-          default: anthropic/claude-haiku-4.5
-          description: Слаг модели OpenRouter для текстового прохода, который делит описание на действие и объект
+          default: openai/gpt-oss-120b
+          description: Имя модели у настроенного провайдера; текстовый проход делит описание на действие и объект
         params: { $ref: '#/components/schemas/JobParams' }
         force:
           type: boolean
@@ -1071,7 +1193,7 @@ components:
         annotation_id: { type: [string, 'null'], format: uuid }
         params: { $ref: '#/components/schemas/JobParams' }
         model: { type: string, example: marlin-2b }
-        structure_model: { type: string, example: anthropic/claude-haiku-4.5 }
+        structure_model: { type: string, example: openai/gpt-oss-120b }
         created_at: { type: string, format: date-time }
         started_at: { type: [string, 'null'], format: date-time }
         finished_at: { type: [string, 'null'], format: date-time }
@@ -1081,7 +1203,15 @@ components:
           additionalProperties: { type: number }
           example: { submit: 1.2, infer: 34.8, parse: 0.01, structure: 2.1, postprocess: 0.05, keyframes: 3.4, persist: 0.08 }
         cost: { $ref: '#/components/schemas/JobCost' }
-        error: { $ref: '#/components/schemas/Problem' }
+        error:
+          allOf: [{ $ref: '#/components/schemas/Problem' }]
+          description: |
+            Непусто тогда и только тогда, когда `status: failed`. Частичный сбой, не
+            испортивший результат, едет в `degraded`, а задача остаётся успешной.
+        degraded:
+          type: array
+          description: Стадии, не отработавшие при этом прогоне. Пусто — всё сошлось.
+          items: { $ref: '#/components/schemas/Degradation' }
         raw_response_url:
           type: [string, 'null']
           format: uri-reference
@@ -1099,11 +1229,13 @@ components:
             gpu: { type: string, example: A10G }
             gpu_seconds: { type: number }
             usd: { type: [number, 'null'] }
-        openrouter:
+        llm:
           type: object
+          description: Стадия structure. Провайдер — параметр конфигурации, поэтому назван полем, а не именем ключа.
           properties:
-            model: { type: string, example: anthropic/claude-haiku-4.5 }
-            generation_id: { type: [string, 'null'], description: Идентификатор генерации OpenRouter — по нему сверяется списанная стоимость }
+            provider: { type: string, example: groq }
+            model: { type: string, example: openai/gpt-oss-120b }
+            request_id: { type: [string, 'null'], description: Идентификатор запроса у провайдера — по нему сверяется списанная стоимость }
             input_tokens: { type: integer }
             cache_read_input_tokens: { type: integer }
             output_tokens: { type: integer }
@@ -1143,12 +1275,22 @@ components:
         job_id: { type: [string, 'null'], format: uuid }
         duration_s: { type: number }
         fps: { type: [number, 'null'] }
-        model: { type: string, example: marlin-2b+anthropic/claude-haiku-4.5 }
+        model: { type: string, example: marlin-2b+openai/gpt-oss-120b }
         version: { type: integer, minimum: 1, description: 'То же значение, что в `ETag`' }
         segments:
           type: array
           items: { $ref: '#/components/schemas/Segment' }
         meta: { type: object }
+        degraded:
+          type: array
+          description: |
+            То же, что у задачи, но на самой разметке: экран проверки держит разметку
+            и до задачи не дотягивается. Пусто — всё сошлось.
+          items: { $ref: '#/components/schemas/Degradation' }
+        reviewed_at:
+          type: [string, 'null']
+          format: date-time
+          description: Когда человек нажал «Завершить разметку». null — ролик ещё ждёт проверки.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         stats: { $ref: '#/components/schemas/AnnotationStats' }
@@ -1207,6 +1349,50 @@ components:
         tool: { type: string }
         keyframe_ts: { type: number, minimum: 0 }
 
+    SegmentEdit:
+      type: object
+      required: [index, patch]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          description: Нумерация ДО применения пакета — та, что клиент видел.
+        patch: { $ref: '#/components/schemas/SegmentPatch' }
+
+    SegmentsPatch:
+      type: object
+      required: [edits]
+      properties:
+        edits:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/SegmentEdit' }
+
+    Degradation:
+      type: object
+      required: [stage, code, title, impact]
+      description: |
+        Стадия, которая не отработала, не уронив задачу. Задача остаётся успешной, но
+        результат неполный: без `structure` описание шага остаётся одной строкой, а
+        объект пуст. Пустой массив — здоровый прогон.
+
+        В экспорт не попадает: канонический формат выгрузки совпадает с форматом
+        метрик поле в поле, и служебных полей в нём нет.
+      properties:
+        stage: { $ref: '#/components/schemas/JobStage' }
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        title:
+          type: string
+          example: Действие и объект не разделены
+        detail:
+          type: string
+          description: Техническая причина, для разработчика.
+        impact:
+          type: string
+          description: |
+            Чем это грозит разметчику. Текст приходит с сервера, чтобы формулировка
+            была одна на всех экранах, где эту разметку показывают.
+
     Suggestion:
       type: object
       required: [action, object]
@@ -1256,7 +1442,7 @@ components:
         video_id: clip00
         duration_s: 30.0
         fps: 2.0
-        model: marlin-2b+anthropic/claude-haiku-4.5
+        model: marlin-2b+openai/gpt-oss-120b
         meta:
           job_id: 8f1e...
           prompt_mode: caption

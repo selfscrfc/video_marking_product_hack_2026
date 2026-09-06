@@ -24,7 +24,7 @@
     },
     "model": {
       "type": "string",
-      "description": "Чем получена разметка: 'marlin-2b', 'marlin-2b+anthropic/claude-haiku-4.5', 'human', 'equal_split_k6'."
+      "description": "Чем получена разметка: 'marlin-2b', 'marlin-2b+openai/gpt-oss-120b', 'human', 'equal_split_k6'."
     },
     "meta": {
       "type": "object",
