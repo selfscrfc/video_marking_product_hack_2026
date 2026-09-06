@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# Ролик и разметка для мока копируются локально: npm run seed
+public/mock/
+tsconfig.tsbuildinfo
