@@ -42,20 +42,21 @@ image = (
     .pip_install(
         # версии те же, что в локальном venv, чтобы поведение совпадало с run_marlin.py
         "torch==2.14.0",
+        # Marlin построена на Qwen3-VL, и её Qwen3VLVideoProcessor импортирует
+        # torchvision. Без него контейнер падает на загрузке процессора.
+        "torchvision",
         "transformers==5.16.1",
         "accelerate",
-        "huggingface_hub[hf_transfer]",
+        "huggingface_hub",
         "av",           # запасной бэкенд декодирования
         "torchcodec",   # основной: его просит run_marlin.py
         "numpy",
         "pillow",
     )
-    .env({
-        "HF_HOME": CACHE_DIR,
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
-        # у модели custom_code; без этого transformers откажется грузить
-        "TRUST_REMOTE_CODE": "1",
-    })
+    # Быструю загрузку даёт hf-xet, который huggingface_hub 1.30 ставит сам.
+    # HF_HUB_ENABLE_HF_TRANSFER здесь не выставляем: без одноимённого пакета
+    # эта переменная роняет загрузку, а пакет вытеснен xet.
+    .env({"HF_HOME": CACHE_DIR})
 )
 
 app = modal.App(APP_NAME)

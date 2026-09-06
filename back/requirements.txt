@@ -1,0 +1,14 @@
+fastapi==0.121.2
+uvicorn[standard]==0.42.0
+sqlalchemy==2.0.44
+psycopg[binary]==3.2.10
+redis==6.4.0
+pydantic==2.13.2
+pydantic-settings==2.13.0
+python-multipart==0.0.20
+jsonschema==4.26.0
+opencv-python-headless==4.13.0.90
+numpy==2.5.2
+openai==2.11.0
+modal==1.5.5
+httpx==0.28.1

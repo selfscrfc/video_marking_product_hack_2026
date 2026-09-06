@@ -1,8 +1,9 @@
-# Топология из ARCHITECTURE.md. Локально GPU не нужна нигде: инференс уехал на Modal,
-# поэтому воркер — обычный CPU-контейнер, а стек одинаково поднимается на маке и на сервере.
+# Топология из ARCHITECTURE.md. Воркер — обычный CPU-контейнер: зрительная модель
+# считается вне стека, и ему остаётся только ffmpeg для ключевых кадров.
 #
-# Modal-приложение (modal/marlin_app.py) сюда не входит и деплоится своим циклом:
-#   modal deploy back/modal/marlin_app.py
+# Сюда не входят и поднимаются отдельно:
+#   local_app/serve.py  — модель на хосте (Docker на macOS не отдаёт контейнеру MPS)
+#   modal_app/marlin.py — она же в облаке: modal deploy back/modal_app/marlin.py
 
 name: sirochek
 
@@ -10,8 +11,10 @@ services:
 
   api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Контекст — корень репозитория: образу нужен spec/annotation.schema.json,
+      # чтобы схема экспорта жила в одном экземпляре, а не копией внутри back/.
+      context: ..
+      dockerfile: back/Dockerfile
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     env_file: .env
     environment:
@@ -29,8 +32,10 @@ services:
 
   worker:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Контекст — корень репозитория: образу нужен spec/annotation.schema.json,
+      # чтобы схема экспорта жила в одном экземпляре, а не копией внутри back/.
+      context: ..
+      dockerfile: back/Dockerfile
     command: python -m worker.main
     env_file: .env
     environment:
