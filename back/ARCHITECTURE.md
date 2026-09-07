@@ -150,18 +150,15 @@ Redis остаётся **каналом прогресса**: воркер шл�
   `hyp0/prompt.py`) и описание формата не меняются между роликами — они помечаются
   точкой кэширования, а переменная часть (строки ролика) идёт после.
 
-**Провайдер — параметр конфигурации, а не имя в коде.** Нужен любой OpenAI-совместимый
-эндпоинт: `LLM_BASE_URL`, `LLM_API_KEY`, `STRUCTURE_MODEL`. В Python это клиент `openai` с
-подменённым `base_url` — отдельного SDK не нужно. Сейчас настроен Groq
-(`https://api.groq.com/openai/v1`); до него был OpenRouter, а до него — прямой вызов
-Anthropic. Смена провайдера за сессию произошла дважды, и именно поэтому его имя
-нигде не зашито: это правка `.env`, а не рефакторинг.
+**Провайдер — параметр конфигурации, а не имя в коде.** Нужен OpenAI-совместимый
+эндпоинт: `LLM_BASE_URL`, `LLM_API_KEY`, `STRUCTURE_MODEL`. В Python это клиент
+`openai` с подменённым `base_url`. Основная конфигурация использует локальный
+`Qwen/Qwen3-4B-Instruct-2507`, который vLLM обслуживает на порту 8200.
 
 Что из этого следует и о чём надо помнить:
 
-- **Имя модели берётся из каталога провайдера** (`GET {LLM_BASE_URL}/models`), а не по
-  памяти: у каждого своя схема именования, и один и тот же Claude называется
-  `claude-haiku-4-5` у Anthropic и `anthropic/claude-haiku-4.5` у OpenRouter.
+- **Имя модели должно совпадать с `--served-model-name` vLLM.** Это проверяется
+  запросом `GET {LLM_BASE_URL}/models` до запуска worker.
 - **Structured output и кэш промпта — свойства конкретной модели у конкретного
   провайдера**, а не гарантия протокола. Проверять по первому же прогону и полю `usage`,
   а не по документации.
@@ -450,12 +447,10 @@ ALTER TABLE segments ADD CONSTRAINT segments_no_overlap
 |---|---|---|
 | Marlin-2B на своей машине | ничего | 26–30 с на MPS (M4 Pro) |
 | Marlin-2B на Modal | GPU-секунды на `infer` | 16 с на A10G плюс 30 с холодного старта; тариф — из биллинга под выбранную карту |
-| Языковая модель (сейчас Groq) | стадия `structure` | ≈700 входных и 1300 выходных токенов |
+| Qwen3-4B-Instruct-2507 локально | стадия `structure` | один текстовый запрос на ролик |
 
-Расход токенов **зависит от модели**, а не только от ролика. Замеры на шести шагах:
-`openai/gpt-oss-120b` через Groq — 529/595 на плоской схеме и около 700/1300 после
-перехода на словарь ролика; тот же ролик на Claude давал 708/205. Число надо переснимать
-при каждой смене модели, а цену за токены брать из тарифов провайдера.
+Расход токенов зависит от числа шагов. Для локального Qwen денежной оплаты за
+запрос нет; worker всё равно сохраняет token usage для оценки нагрузки.
 
 Тариф Modal в таблицу не вписан намеренно: он зависит от типа карты, а выдумывать цифру,
 которую нечем подтвердить, — плохой способ закрыть графу в защите. GPU-секунды при этом
@@ -466,8 +461,9 @@ ALTER TABLE segments ADD CONSTRAINT segments_no_overlap
 ## Конфигурация
 
 Всё через переменные окружения, см. [`.env.example`](.env.example). Обязательные:
-`DATABASE_URL`, `REDIS_URL`, `MEDIA_ROOT`, `LLM_API_KEY`. Токены Modal нужны только
-если он есть в `INFERENCE_PROVIDERS`.
+`DATABASE_URL`, `REDIS_URL`, `MEDIA_ROOT`. `LLM_API_KEY=local` нужен только потому,
+что OpenAI-клиент требует непустое значение. Токены Modal нужны лишь когда он есть
+в `INFERENCE_PROVIDERS`.
 
 Ключи живут только в `.env`, который лежит в `.gitignore`. В репозиторий коммитится
 `.env.example` с пустыми значениями.
@@ -476,8 +472,7 @@ ALTER TABLE segments ADD CONSTRAINT segments_no_overlap
 замером: `MARLIN_FPS` (2.0 — родная частота модели), `CONFIDENCE_THRESHOLD`,
 `MIN_SEGMENT_S`, `MERGE_THRESHOLD`, `STRUCTURE_MODEL`.
 
-Сервис не стартует с пустыми обязательными ключами: лучше упасть на старте, чем принять
-ролик и упасть на стадии `structure`.
+Перед обработкой должны отвечать Marlin на порту 8100 и Qwen на порту 8200.
 
 ---
 
@@ -486,10 +481,8 @@ ALTER TABLE segments ADD CONSTRAINT segments_no_overlap
 Полная инструкция — в [`../README.md`](../README.md). Коротко, для локального пути:
 
 ```bash
-cp back/.env.example back/.env                        # вписать LLM_API_KEY
-# зрительная модель на хосте: вне контейнеров и обязательно на 0.0.0.0
-cd back && HF_HUB_CACHE=../../hf_cache/hub PYTORCH_ENABLE_MPS_FALLBACK=1 \
-  ../../venv/bin/python -m uvicorn local_app.serve:app --host 0.0.0.0 --port 8100
+cp back/.env.example back/.env
+# Qwen/vLLM на 0.0.0.0:8200 и Marlin на 0.0.0.0:8100 — команды в README.
 docker compose -f back/docker-compose.yml up -d
 ```
 

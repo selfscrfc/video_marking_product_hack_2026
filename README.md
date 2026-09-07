@@ -4,10 +4,11 @@
 на шаги, называет действие и объект, выбирает ключевой кадр. Дальше человек
 правит результат и выгружает JSON или CSV.
 
-Разметку строит зрительная модель **Marlin-2B** одним проходом — ролик на вход,
-события с таймкодами на выход. За ней идёт короткий текстовый проход через
-языковую модель, который делит описание шага на действие, объект и инструмент:
-сама Marlin их не разделяет, а кейс меряет обе колонки.
+Разметку строит локальный двухмодельный каскад. **Marlin-2B** получает ролик и
+возвращает интервалы с текстовыми описаниями действий. Затем
+**Qwen3-4B-Instruct-2507** получает только эти описания и нормализует их в поля
+`action`, `object`, `tool` и `confidence`. Qwen не видит видео и не меняет
+границы: это ровно стадия LLM-парсинга из архитектуры.
 
 | | |
 |---|---|
@@ -23,15 +24,15 @@
 ## Что нужно до запуска
 
 - **Docker** — на нём поднимается весь бэкенд.
-- **Python 3.12+ и ffmpeg на хосте** — для сервиса зрительной модели.
+- **Python 3.12+ и ffmpeg на хосте** — для сервисов Marlin и Qwen.
   Docker на macOS не отдаёт контейнеру ускоритель Apple, поэтому модель
   считается вне контейнеров. На машине с NVIDIA этот сервис можно не поднимать
   и ходить в облако (см. ниже).
 - **Node 20+** — для фронтенда.
-- **Доступ к `NemoStation/Marlin-2B`** на Hugging Face: репозиторий закрытый,
-  апрув автоматический.
-- **Ключ любого OpenAI-совместимого провайдера** для второго прохода. Сейчас
-  настроен Groq, но подойдёт любой — это строка в конфигурации.
+- **Доступ к `NemoStation/Marlin-2B`** на Hugging Face: если репозиторий
+  запрашивает подтверждение, сначала примите его условия на странице модели.
+- **NVIDIA GPU с 24 ГБ VRAM** для одновременного локального запуска обеих
+  моделей. Конфигурация ниже рассчитана на стенд с RTX 3090.
 
 ## Запуск
 
@@ -41,41 +42,67 @@
 cp back/.env.example back/.env
 ```
 
-Обязательно вписать `LLM_API_KEY`. Без него сервис поднимется, но стадия
-`structure` не отработает: в разметке действие останется одной строкой, а объект
-будет пуст — задача пометит себя как деградировавшую и скажет об этом в
-интерфейсе.
+Значения по умолчанию уже направляют worker в локальный vLLM на порту `8200`.
+`LLM_API_KEY=local` — техническая непустая строка для OpenAI-клиента; внешний
+API-ключ не нужен.
 
-### 2. Зрительная модель на хосте
+### 2. Скачать обе модели локально
 
 ```bash
 python3 -m venv venv
 venv/bin/pip install -r back/local_app/requirements.txt
 
-# Репозиторий модели закрытый — нужен токен
 venv/bin/hf auth login
 
-# Веса, около 5 ГиБ. HF_HUB_DISABLE_XET=1 обязателен: протокол xet
-# на нестабильной сети встаёт на нуле байт вместо того, чтобы упасть.
-HF_HUB_CACHE=hf_cache/hub HF_HUB_DISABLE_XET=1 \
-  venv/bin/hf download NemoStation/Marlin-2B
+mkdir -p models
+HF_HUB_DISABLE_XET=1 venv/bin/hf download NemoStation/Marlin-2B \
+  --local-dir models/Marlin-2B
+HF_HUB_DISABLE_XET=1 venv/bin/hf download Qwen/Qwen3-4B-Instruct-2507 \
+  --local-dir models/Qwen3-4B-Instruct-2507
+```
 
-# Сервис. --host 0.0.0.0 обязателен: на loopback контейнер не достучится.
-cd back && HF_HUB_CACHE=../hf_cache/hub PYTORCH_ENABLE_MPS_FALLBACK=1 \
+Пайплайн после этого работает с локальными каталогами. `models/` исключён из
+Git: веса нельзя коммитить в репозиторий.
+
+### 3. Запустить QwenLLM на хосте
+
+Qwen поднимается отдельным OpenAI-совместимым сервисом. Отдельное окружение
+изолирует зависимости vLLM от проверенных версий Marlin:
+
+```bash
+python3 -m venv .venv-qwen
+.venv-qwen/bin/pip install --upgrade pip
+.venv-qwen/bin/pip install 'vllm>=0.8.5'
+
+CUDA_VISIBLE_DEVICES=0 .venv-qwen/bin/vllm serve \
+  ./models/Qwen3-4B-Instruct-2507 \
+  --served-model-name Qwen/Qwen3-4B-Instruct-2507 \
+  --host 0.0.0.0 --port 8200 \
+  --max-model-len 16384 \
+  --gpu-memory-utilization 0.40
+```
+
+Проверка: `curl -s http://localhost:8200/v1/models` должна вернуть имя Qwen.
+
+### 4. Запустить Marlin-2B на хосте
+
+```bash
+cd back
+MARLIN_MODEL_PATH=../models/Marlin-2B LOCAL_DEVICE=cuda \
   ../venv/bin/python -m uvicorn local_app.serve:app --host 0.0.0.0 --port 8100
 ```
 
-Модель грузится около 11 секунд, дальше держится в памяти. Готовность —
-`curl localhost:8100/health`.
+Готовность: `curl -s localhost:8100/health`. Оба сервиса должны слушать
+`0.0.0.0`, иначе worker из Docker не сможет к ним обратиться.
 
-### 3. Бэкенд
+### 5. Бэкенд
 
 ```bash
 docker compose -f back/docker-compose.yml up -d
 curl -s localhost:8000/api/v1/health     # ready: true
 ```
 
-### 4. Фронтенд
+### 6. Фронтенд
 
 ```bash
 cd front && npm install && npm run dev
@@ -93,7 +120,7 @@ cd front && npm install && npm run dev
 cd ../hyp0 && ../venv/bin/python run_api.py --clips clips --gt gt_merged --out runs/check
 ```
 
-## Без локальной модели
+## Облачный fallback для Marlin
 
 Инференс вынесен за интерфейс, и провайдер выбирается конфигурацией:
 
@@ -101,7 +128,7 @@ cd ../hyp0 && ../venv/bin/python run_api.py --clips clips --gt gt_merged --out r
 INFERENCE_PROVIDERS=modal,local     # порядок предпочтения, первый рабочий отвечает
 ```
 
-`modal` — то же приложение в облаке, деплой отдельным циклом:
+`modal` — тот же Marlin в облаке, деплой отдельным циклом:
 
 ```bash
 venv/bin/modal deploy back/modal_app/marlin.py
@@ -129,10 +156,17 @@ spec/           контракт: OpenAPI, разбор прозой, схема
 |---|---|---|
 | Marlin-2B на своей машине | разметка ролика | бесплатно, 30 с на ролик |
 | Modal (A10G) | она же в облаке, запасной путь | по GPU-секундам, 16 с на ролик |
-| Groq, `openai/gpt-oss-120b` | деление описания на поля | ≈700 входных и 1300 выходных токенов на ролик |
+| Qwen3-4B-Instruct-2507 на своей машине | `description` → `action` / `object` / `tool` | бесплатно, один текстовый запрос на ролик |
 
-Обе модели свободно заменяются: имя языковой модели — переменная окружения,
-провайдер инференса — тоже.
+Имя Qwen и адрес его OpenAI-совместимого сервера задаются через
+`STRUCTURE_MODEL` и `LLM_BASE_URL`; порядок провайдеров Marlin — через
+`INFERENCE_PROVIDERS`.
+
+## Что не попадает в Git
+
+`.gitignore` исключает веса (`models/`, `hf_cache/`), виртуальные окружения,
+пользовательские видео и архивы. В репозитории остаются только исходники,
+контракты, конфигурационный пример и один корневой `README.md`.
 
 ## Чего в продукте нет
 

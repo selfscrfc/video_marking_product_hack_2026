@@ -141,7 +141,7 @@ function finishJob(job: Job): Annotation {
   })))
   const ann: Annotation = {
     annotation_id: `a-${job.video_id}`, video_id: job.video_id, job_id: job.job_id,
-    duration_s: video.duration_s, fps: 2, model: 'marlin-2b+anthropic/claude-haiku-4.5',
+    duration_s: video.duration_s, fps: 2, model: 'marlin-2b+Qwen/Qwen3-4B-Instruct-2507',
     version: 1, segments,
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }
