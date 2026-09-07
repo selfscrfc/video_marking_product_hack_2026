@@ -154,9 +154,15 @@
 .frame {
   display: flex; align-items: center; justify-content: center;
   border-radius: var(--radius-2xs); background: var(--tint-cool);
-  object-fit: cover; width: 100%;
+  /* contain, а не cover: пропорция ролика заранее неизвестна, и обрезка по
+     центру у вертикального или квадратного кадра срезает как раз то место, где
+     происходит действие. Лучше поля по краям, чем потерянные руки в кадре. */
+  object-fit: contain; width: 100%;
   font: 400 11px/1 var(--font-ui); color: var(--ink-40);
 }
+/* Поля под нестандартную пропорцию — те же, что у плеера, чтобы кадр и видео
+   выглядели одним материалом. */
+img.frame { background: #000; }
 .frame--empty { min-height: 60px; }
 
 /* Кадр показывается целиком и в своей пропорции: .frame по умолчанию режет
@@ -229,6 +235,11 @@
 .ivl__body {
   display: flex; flex-direction: column; gap: 14px;
   overflow: auto; min-height: 0; margin: 0 -4px; padding: 0 4px;
+  /* Панель почти всегда длиннее своей высоты: вариантов бывает десяток, и они
+     переносятся в две строки. Полоса прокрутки на маке появляется только во
+     время прокрутки, поэтому без подсказки содержимое выглядит просто
+     обрезанным по слову. Растворяем нижний край — так видно, что там ещё есть. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
 }
 
 .bounds { display: flex; flex-direction: column; gap: 8px; }
@@ -239,7 +250,16 @@
 
 .choice { display: flex; flex-direction: column; gap: 8px; }
 .choice__chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.choice__chips .pill { font-size: 12.5px; padding: 0 13px; }
+/* Варианты — это то, что вернула модель, а она возвращает и целые предложения,
+   когда не смогла разложить шаг на поля. Пилюля с nowrap такую подпись срезает
+   по краю панели, и выбрать её вслепую нельзя. Поэтому здесь текст переносится,
+   а высота идёт по содержимому. */
+.choice__chips .pill {
+  font-size: 12.5px; padding: 7px 13px;
+  height: auto; min-height: 30px; max-width: 100%;
+  white-space: normal; text-align: left; line-height: 1.35;
+  border-radius: var(--radius-xs);
+}
 .choice__empty { font: 400 11.5px/1.4 var(--font-ui); color: var(--ink-40); }
 .choice__row { display: flex; gap: 6px; }
 .choice__add {

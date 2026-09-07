@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ts, label, parseTs } from '../api/format'
 import type { Annotation, Segment, SegmentPatch } from '../api/types'
 import { MIN_LEN } from './Timeline'
@@ -58,6 +58,31 @@ function vocabulary(ann: Annotation, field: 'action' | 'object'): string[] {
     if (v) counts.set(v, (counts.get(v) ?? 0) + 1)
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([v]) => v)
+}
+
+/** Словарь ролика, который не забывает.
+ *
+ *  Считать его только по текущей разметке нельзя: слово, встречавшееся ровно в
+ *  одном шаге, исчезает из списка в тот момент, когда этот шаг переименовали.
+ *  То есть предыдущий вариант пропадает ровно тогда, когда он нужнее всего —
+ *  чтобы вернуться, передумав. Поэтому всё, что здесь когда-либо было видно,
+ *  остаётся до конца работы с роликом.
+ *
+ *  Порядок задаёт текущая разметка (частые слова выше), а забытые встают
+ *  следом: они не должны вытеснять то, что действительно используется. */
+function useVocabulary(ann: Annotation, field: 'action' | 'object'): string[] {
+  const seen = useRef<Set<string>>(new Set())
+  const annotationId = ann.annotation_id
+  const lastId = useRef(annotationId)
+  if (lastId.current !== annotationId) {
+    // Другой ролик — другой словарь. Слова прошлого сюда не переносятся.
+    seen.current = new Set()
+    lastId.current = annotationId
+  }
+  const current = vocabulary(ann, field)
+  for (const v of current) seen.current.add(v)
+  const rest = [...seen.current].filter((v) => !current.includes(v)).sort()
+  return [...current, ...rest]
 }
 
 function Choice({
@@ -124,8 +149,8 @@ export function IntervalPanel({
   busy: boolean
   onChange: (patch: SegmentPatch) => void
 }) {
-  const actions = useMemo(() => vocabulary(annotation, 'action'), [annotation])
-  const objects = useMemo(() => vocabulary(annotation, 'object'), [annotation])
+  const actions = useVocabulary(annotation, 'action')
+  const objects = useVocabulary(annotation, 'object')
 
   const prev = segment && annotation.segments.find((s) => s.index === segment.index - 1)
   const next = segment && annotation.segments.find((s) => s.index === segment.index + 1)
