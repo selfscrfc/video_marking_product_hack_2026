@@ -60,7 +60,24 @@ def health(response: Response) -> dict:
     # Достаточно одного рабочего: список и заведён затем, чтобы отказ любого
     # из них не останавливал обработку.
     inference_ok = any(p["ready"] for p in providers)
-    ready = db_ok and inference_ok and worker_seen is not None and worker_seen < 60
+    qwen_ok = False
+    try:
+        import httpx
+        qwen_ok = httpx.get(
+            f"{cfg.llm_base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {cfg.llm_api_key}"},
+            timeout=2,
+        ).is_success
+    except Exception:  # noqa: BLE001 — состояние отражается в health
+        qwen_ok = False
+
+    ready = (
+        db_ok
+        and inference_ok
+        and qwen_ok
+        and worker_seen is not None
+        and worker_seen < 60
+    )
     if not ready:
         response.status_code = 503
     return {
@@ -68,6 +85,11 @@ def health(response: Response) -> dict:
         "database": db_ok, "queue": queue_ok,
         "worker_seen_s_ago": worker_seen,
         "inference": providers,
+        "structure": {
+            "ready": qwen_ok,
+            "provider": cfg.llm_provider,
+            "model": cfg.structure_model,
+        },
         "uptime_s": round(time.time() - _STARTED, 1),
     }
 
@@ -94,8 +116,7 @@ def client_config() -> dict:
             {"id": "coarse", "title": "Крупные шаги",
              "description": "Обзорная разметка: несколько крупных этапов на ролик."},
         ],
-        "structure_models": [cfg.structure_model, "anthropic/claude-sonnet-5",
-                             "anthropic/claude-opus-5"],
+        "structure_models": [cfg.structure_model],
     }
 
 

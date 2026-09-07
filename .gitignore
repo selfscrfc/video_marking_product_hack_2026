@@ -5,3 +5,9 @@ data/
 .DS_Store
 .venv/
 venv/
+.venv-qwen/
+models/
+hf_cache/
+*.tar
+*.tar.gz
+*.zip

@@ -47,7 +47,7 @@ curl -s localhost:8000/api/v1/config
   "max_size_bytes": 209715200,
   "confidence_threshold": 0.6, "min_segment_s": 0.4,
   "profiles": [{"id": "contact_phase", "title": "Контактные фазы"}],
-  "structure_models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+  "structure_models": ["Qwen/Qwen3-4B-Instruct-2507"]
 }
 ```
 
@@ -80,7 +80,7 @@ curl -s -X POST localhost:8000/api/v1/videos -F file=@clip00.mp4
 ```bash
 curl -s -X POST localhost:8000/api/v1/videos/6f2b…/jobs \
   -H 'content-type: application/json' \
-  -d '{"profile": "contact_phase", "structure_model": "openai/gpt-oss-120b"}'
+  -d '{"profile": "contact_phase", "structure_model": "Qwen/Qwen3-4B-Instruct-2507"}'
 ```
 
 `202`, в `Location` — адрес задачи. Идемпотентно по паре (ролик, хэш параметров): второй
@@ -163,7 +163,7 @@ ETag: "1"
 ```json
 {
   "annotation_id": "c3d9…", "video_id": "6f2b…", "job_id": "8f1e…",
-  "duration_s": 30.0, "fps": 2.0, "model": "marlin-2b+openai/gpt-oss-120b",
+  "duration_s": 30.0, "fps": 2.0, "model": "marlin-2b+Qwen/Qwen3-4B-Instruct-2507",
   "version": 1,
   "segments": [
     {
@@ -254,7 +254,7 @@ curl -sOJ 'localhost:8000/api/v1/annotations/c3d9…/export?format=csv'
      "tool": "", "confidence": 0.91, "keyframe_ts": 1.8, "edited_by_human": false}
   ],
   "fps": 2.0,
-  "model": "marlin-2b+openai/gpt-oss-120b",
+  "model": "marlin-2b+Qwen/Qwen3-4B-Instruct-2507",
   "meta": {"job_id": "8f1e…", "prompt_mode": "caption"}
 }
 ```

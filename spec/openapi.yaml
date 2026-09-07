@@ -1049,6 +1049,14 @@ components:
               detail:
                 type: string
                 description: Адрес сервиса или имя приложения — чтобы было видно, о ком речь.
+        structure:
+          type: object
+          description: Готовность локального QwenLLM для нормализации action/object.
+          required: [ready, provider, model]
+          properties:
+            ready: { type: boolean }
+            provider: { type: string, example: local_qwen }
+            model: { type: string, example: Qwen/Qwen3-4B-Instruct-2507 }
         uptime_s:
           type: number
           description: Сколько секунд назад поднялся процесс api.
@@ -1080,7 +1088,7 @@ components:
           type: array
           description: Доступные модели текстового прохода; первая — по умолчанию
           items: { type: string }
-          example: [openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b]
+          example: [Qwen/Qwen3-4B-Instruct-2507]
 
     GranularityProfile:
       type: object
@@ -1118,7 +1126,7 @@ components:
           default: contact_phase
         structure_model:
           type: string
-          default: openai/gpt-oss-120b
+          default: Qwen/Qwen3-4B-Instruct-2507
           description: Имя модели у настроенного провайдера; текстовый проход делит описание на действие и объект
         params: { $ref: '#/components/schemas/JobParams' }
         force:
@@ -1193,7 +1201,7 @@ components:
         annotation_id: { type: [string, 'null'], format: uuid }
         params: { $ref: '#/components/schemas/JobParams' }
         model: { type: string, example: marlin-2b }
-        structure_model: { type: string, example: openai/gpt-oss-120b }
+        structure_model: { type: string, example: Qwen/Qwen3-4B-Instruct-2507 }
         created_at: { type: string, format: date-time }
         started_at: { type: [string, 'null'], format: date-time }
         finished_at: { type: [string, 'null'], format: date-time }
@@ -1233,8 +1241,8 @@ components:
           type: object
           description: Стадия structure. Провайдер — параметр конфигурации, поэтому назван полем, а не именем ключа.
           properties:
-            provider: { type: string, example: groq }
-            model: { type: string, example: openai/gpt-oss-120b }
+            provider: { type: string, example: local_qwen }
+            model: { type: string, example: Qwen/Qwen3-4B-Instruct-2507 }
             request_id: { type: [string, 'null'], description: Идентификатор запроса у провайдера — по нему сверяется списанная стоимость }
             input_tokens: { type: integer }
             cache_read_input_tokens: { type: integer }
@@ -1275,7 +1283,7 @@ components:
         job_id: { type: [string, 'null'], format: uuid }
         duration_s: { type: number }
         fps: { type: [number, 'null'] }
-        model: { type: string, example: marlin-2b+openai/gpt-oss-120b }
+        model: { type: string, example: marlin-2b+Qwen/Qwen3-4B-Instruct-2507 }
         version: { type: integer, minimum: 1, description: 'То же значение, что в `ETag`' }
         segments:
           type: array
@@ -1442,7 +1450,7 @@ components:
         video_id: clip00
         duration_s: 30.0
         fps: 2.0
-        model: marlin-2b+openai/gpt-oss-120b
+        model: marlin-2b+Qwen/Qwen3-4B-Instruct-2507
         meta:
           job_id: 8f1e...
           prompt_mode: caption

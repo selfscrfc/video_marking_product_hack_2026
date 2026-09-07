@@ -21,7 +21,7 @@ export const CONFIG: ClientConfig = {
     },
     { id: 'coarse', title: 'Крупные шаги', description: 'Обзорная разметка: шаг — законченное действие.' },
   ],
-  structure_models: ['anthropic/claude-haiku-4.5', 'anthropic/claude-sonnet-5', 'anthropic/claude-opus-5'],
+  structure_models: ['Qwen/Qwen3-4B-Instruct-2507'],
 }
 
 type RawSeg = [start: number, end: number, action: string, object: string, confidence: number | null]
@@ -102,7 +102,7 @@ export function seed(): MockState {
     {
       job_id: 'j-static-00', video_id: 'v-static-00', status: 'succeeded',
       stage: 'persist', stage_index: 6, progress: 1, annotation_id: 'a-static-00',
-      model: 'marlin-2b', structure_model: 'anthropic/claude-haiku-4.5',
+      model: 'marlin-2b', structure_model: 'Qwen/Qwen3-4B-Instruct-2507',
       created_at: iso(0, 19, 12), finished_at: iso(0, 19, 13),
       timings: { submit: 1.2, infer: 34.8, parse: 0.01, structure: 2.1, postprocess: 0.05, keyframes: 3.4, persist: 0.08 },
     },
@@ -110,13 +110,13 @@ export function seed(): MockState {
       // единственная живая задача: её прогресс двигается во времени
       job_id: 'j-static-05', video_id: 'v-static-05', status: 'running',
       stage: 'infer', stage_index: 1, progress: 0.12, eta_s: 70,
-      model: 'marlin-2b', structure_model: 'anthropic/claude-haiku-4.5',
+      model: 'marlin-2b', structure_model: 'Qwen/Qwen3-4B-Instruct-2507',
       created_at: new Date().toISOString(), started_at: new Date().toISOString(),
     },
     {
       job_id: 'j-static-02', video_id: 'v-static-02', status: 'succeeded',
       stage: 'persist', stage_index: 6, progress: 1, annotation_id: 'a-static-02',
-      model: 'marlin-2b', structure_model: 'anthropic/claude-haiku-4.5',
+      model: 'marlin-2b', structure_model: 'Qwen/Qwen3-4B-Instruct-2507',
       created_at: iso(1, 14, 2), finished_at: iso(1, 14, 4),
       timings: { submit: 1.1, infer: 31.2, parse: 0.01, structure: 1.9, postprocess: 0.04, keyframes: 3.1, persist: 0.07 },
     },
@@ -138,13 +138,13 @@ export function seed(): MockState {
   const annotations: Annotation[] = [
     {
       annotation_id: 'a-static-00', video_id: 'v-static-00', job_id: 'j-static-00',
-      duration_s: 20, fps: 2, model: 'marlin-2b+anthropic/claude-haiku-4.5',
+      duration_s: 20, fps: 2, model: 'marlin-2b+Qwen/Qwen3-4B-Instruct-2507',
       version: 1, segments: buildSegments(SEGS_00),
       created_at: iso(0, 19, 13), updated_at: iso(0, 19, 13),
     },
     {
       annotation_id: 'a-static-02', video_id: 'v-static-02', job_id: 'j-static-02',
-      duration_s: 20, fps: 2, model: 'marlin-2b+anthropic/claude-haiku-4.5',
+      duration_s: 20, fps: 2, model: 'marlin-2b+Qwen/Qwen3-4B-Instruct-2507',
       version: 4,
       segments: buildSegments(SEGS_02).map((s) => ({ ...s, edited_by_human: s.index === 3 })),
       created_at: iso(1, 14, 4), updated_at: now, reviewed_at: iso(1, 15, 10),

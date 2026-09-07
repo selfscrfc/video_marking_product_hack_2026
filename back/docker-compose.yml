@@ -21,6 +21,8 @@ services:
       DATABASE_URL: postgresql+psycopg://sirochek:sirochek@postgres:5432/sirochek
       REDIS_URL: redis://redis:6379/0
       MEDIA_ROOT: /data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     volumes:
@@ -42,6 +44,9 @@ services:
       DATABASE_URL: postgresql+psycopg://sirochek:sirochek@postgres:5432/sirochek
       REDIS_URL: redis://redis:6379/0
       MEDIA_ROOT: /data
+    extra_hosts:
+      # Требуется на Linux; на Docker Desktop это имя уже существует.
+      - "host.docker.internal:host-gateway"
     volumes:
       # тот же том, что у api: воркер пишет кадры, api их раздаёт
       - media:/data

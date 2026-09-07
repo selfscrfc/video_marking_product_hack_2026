@@ -26,18 +26,16 @@ class Settings(BaseSettings):
     modal_app_name: str = "sirochek-marlin"
     modal_function_timeout_s: int = 180
 
-    # Языковая модель для стадии structure. Провайдер — параметр, а не имя в
-    # коде: за сессию мы сменили его дважды, и оба раза это должно было быть
-    # правкой конфигурации. Годится любой OpenAI-совместимый эндпоинт.
-    llm_provider: str = "groq"
+    # Локальный Qwen обслуживается vLLM через OpenAI-совместимый API. Благодаря
+    # этому worker остаётся CPU-контейнером, а обе модели живут на GPU хоста.
+    llm_provider: str = "local_qwen"
     # Потолок на стадию structure целиком, с ретраями. Бюджет кейса — 120 с на
     # ролик, и стадия не имеет права съесть его весь.
     llm_timeout_s: float = 45.0
-    llm_base_url: str = "https://api.groq.com/openai/v1"
-    llm_api_key: str = ""
-    # Имя сверить с каталогом провайдера (GET {LLM_BASE_URL}/models) до первого
-    # прогона: у Groq свой набор, и поддержка json_schema есть не у всех моделей.
-    structure_model: str = "openai/gpt-oss-120b"
+    llm_base_url: str = "http://host.docker.internal:8200/v1"
+    # vLLM не проверяет ключ по умолчанию, но OpenAI-клиент требует непустую строку.
+    llm_api_key: str = "local"
+    structure_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     # Язык описаний: source — как ответила Marlin (она отвечает по-английски),
     # ru / en — принудительно. Влияет на сверку с эталоном: Assembly101
     # размечен по-английски, а промпт гипотезы 0 просит русский.

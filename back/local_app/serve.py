@@ -4,9 +4,9 @@
 контейнере, а модель обязана считаться на хосте. Отсюда HTTP между ними —
 воркер ходит на host.docker.internal, как ходил бы на любой внешний провайдер.
 
-Запуск (с хоста, не из контейнера):
-    HF_HUB_CACHE=hf_cache/hub PYTORCH_ENABLE_MPS_FALLBACK=1 \
-        venv/bin/python -m uvicorn local_app.serve:app --host 0.0.0.0 --port 8100
+Запуск (из каталога back, с хоста, не из контейнера):
+    MARLIN_MODEL_PATH=../models/Marlin-2B LOCAL_DEVICE=cuda \
+        ../venv/bin/python -m uvicorn local_app.serve:app --host 0.0.0.0 --port 8100
 
 `--host 0.0.0.0` обязателен: на loopback контейнер не достучится, ему видно
 только внешний интерфейс хоста.
@@ -26,7 +26,7 @@ import torch
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-REPO = "NemoStation/Marlin-2B"
+REPO = os.environ.get("MARLIN_MODEL_PATH", "../models/Marlin-2B")
 
 # Родной caption-режим: модель обучена на это, свой JSON-промпт ей не навязываем.
 CAPTION_PROMPT = (
@@ -49,9 +49,13 @@ def _load() -> None:
 
     t0 = time.time()
     dtype = torch.bfloat16 if DEVICE != "cpu" else torch.float32
-    _state["processor"] = AutoProcessor.from_pretrained(REPO, trust_remote_code=True)
+    _state["processor"] = AutoProcessor.from_pretrained(
+        REPO, trust_remote_code=True, local_files_only=True
+    )
     _state["model"] = (
-        AutoModelForCausalLM.from_pretrained(REPO, dtype=dtype, trust_remote_code=True)
+        AutoModelForCausalLM.from_pretrained(
+            REPO, dtype=dtype, trust_remote_code=True, local_files_only=True
+        )
         .to(DEVICE)
         .eval()
     )
