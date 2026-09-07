@@ -29,7 +29,15 @@ from fastapi.responses import JSONResponse
 REPO = "NemoStation/Marlin-2B"
 
 # Родной caption-режим: модель обучена на это, свой JSON-промпт ей не навязываем.
-CAPTION_PROMPT = "Describe the video with a scene summary and timestamped events."
+CAPTION_PROMPT = (
+    # Канонический промпт обучения, дословно из modeling_marlin.py, где он
+    # помечен «DO NOT EDIT»: строки обязаны совпадать с тем, на чём модель
+    # дообучали. Раньше здесь стоял пересказ своими словами, и на части
+    # роликов модель уходила в режим поиска момента — отвечала событиями
+    # без таймкодов, а разбор падал в model_parse_failed.
+    "Provide a spatial description of this clip followed by time-ranged events.\n"
+    "For each event, give the time range as <start - end> and a short description."
+)
 
 DEVICE = os.environ.get("LOCAL_DEVICE", "mps")
 

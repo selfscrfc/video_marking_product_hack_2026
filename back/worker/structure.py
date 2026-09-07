@@ -25,9 +25,21 @@ log = logging.getLogger("worker.structure")
 # критерия гранулярности живёт в hyp0/prompt.py; два текста обязаны говорить об
 # одном и том же, иначе метрика начнёт мерить рассогласование документов.
 GRANULARITY = (
-    "One step is one contact phase: reach for, grasp, move, place, release. "
-    "Do not generalise to the whole scenario and do not split into individual "
-    "finger movements."
+    "A step is one contact phase — about as long as reaching for something, taking "
+    "it, moving it or putting it down. Do not generalise to the whole scenario and "
+    "do not split into individual finger movements. This describes the SIZE of a "
+    "step, not a list of allowed verbs."
+    # Последняя фраза не украшение. Пока перечисление фаз стояло без неё, модель
+    # читала его как закрытый словарь и возвращала -1 на всё, что в него не
+    # попало, честно понизив уверенность. Критерий задаёт размер шага, а не
+    # набор глаголов.
+    #
+    # Примеров глаголов здесь нет намеренно. Раньше они были ("hold", "unscrew",
+    # "place") и оказались глаголами сборки: на роликах Assembly101 всё сходилось,
+    # на кухонном половина шагов осталась без действия. Замер показал, что с
+    # нейтральной формулировкой словарь получается тот же, а домен перестаёт
+    # протекать в инструкцию. Домен продукта заранее неизвестен — разметка
+    # zero-shot, — и любой пример здесь становится подсказкой в одну сторону.
 )
 
 SYSTEM = f"""You normalise video annotation steps into a fixed shape.
@@ -39,9 +51,10 @@ The input is a numbered list of steps, each described by one sentence.
 Work in two stages.
 
 1. Build the vocabulary of the whole clip:
-   - `actions`: the distinct actions performed, each a single verb in base form
-     ("hold", "unscrew", "place"). The same physical action gets one entry, reused by
-     every step that performs it.
+   - `actions`: the distinct actions performed, each a single verb in base form.
+     Take the verb from what the step actually describes; the vocabulary is built from
+     this clip and is not chosen from any fixed list. The same physical action gets one
+     entry, reused by every step that performs it.
    - `objects`: the distinct physical objects handled, each a short bare noun phrase.
      Drop descriptive adjectives such as colour or size ("yellow toy car" -> "toy car")
      unless the adjective is what tells two objects of this clip apart. A part of an
@@ -106,7 +119,12 @@ def structure(descriptions: list[str]) -> tuple[list[dict], dict]:
     from openai import OpenAI
 
     cfg = settings()
-    client = OpenAI(api_key=cfg.llm_api_key, base_url=cfg.llm_base_url)
+    # Таймаут обязателен. Стадия обычно занимает 2–5 с, но на обрыве связи
+    # клиент по умолчанию сидит с ретраями минутами: один такой случай съел
+    # 587 секунд при бюджете кейса в 120, и задача выглядела зависшей.
+    # Лучше признать деградацию быстро, чем держать пользователя в неведении.
+    client = OpenAI(api_key=cfg.llm_api_key, base_url=cfg.llm_base_url,
+                    timeout=cfg.llm_timeout_s, max_retries=1)
 
     listing = "\n".join(f"{i}. {d}" for i, d in enumerate(descriptions))
 

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # коде: за сессию мы сменили его дважды, и оба раза это должно было быть
     # правкой конфигурации. Годится любой OpenAI-совместимый эндпоинт.
     llm_provider: str = "groq"
+    # Потолок на стадию structure целиком, с ретраями. Бюджет кейса — 120 с на
+    # ролик, и стадия не имеет права съесть его весь.
+    llm_timeout_s: float = 45.0
     llm_base_url: str = "https://api.groq.com/openai/v1"
     llm_api_key: str = ""
     # Имя сверить с каталогом провайдера (GET {LLM_BASE_URL}/models) до первого
